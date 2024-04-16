@@ -262,13 +262,13 @@ $ sudo ./userTest 2 -> IOCTL_MOD_HOOK
 $ sudo ./userTest 3 -> IOCTL_FILE_HIDE
 ```
 
-### Hide/Unhide module (10%)
+### Hide/Unhide module
 ```bash=
 # 0 is the hide/unhiden module function 
 sudo ./userTest 0
 ```
 
-### Masquerade process name (30%)
+### Masquerade process name
 ```bash=
 # execute the program
 ./NTUST
@@ -288,14 +288,14 @@ ps ao pid,comm
 # because the length of the new_name string is longer than the orig_name. 
 ```
 
-## Hook/Unhook syscall (40%)
+## Hook/Unhook syscall
 ```bash=
 #  install the rewritten syscall hook 
 #  so that you can proceed with the following three hook syscall tests
 sudo ./userTest 2
 ```
 
-### reboot (10%)
+### reboot
 ```bash=
 # It should invoke the reboot syscall directly
 # test poweroff, It won't work
@@ -307,7 +307,7 @@ sudo systemctl --force --force poweroff
 sudo systemctl --force --force reboot
 ```
 
-### kill (10%)
+### kill
 ```bash=
 # run a test program
 ./hsuckd
@@ -322,7 +322,7 @@ ps aux | grep hsuckd
 # It still works
 ```
 
-### getdents64 (20%)
+### getdents64
 ```bash=
 # you can see the file "HiddenFile"
 ls
