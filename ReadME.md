@@ -243,6 +243,12 @@ out:
 
 
 ## How to use this LKM
+The ```make modules_install``` command ensures that these modules are correctly placed in the /lib/modules/$(KERNELRELEASE)/ directory, where $(KERNELRELEASE) is the version of the kernel you have compiled.
+
+```bash=
+sudo make modules_install 
+```
+
 ### Load My LKM
 ```bash=
 make
