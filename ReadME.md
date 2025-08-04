@@ -1,11 +1,8 @@
-You can also see this document on [HackMD](https://hackmd.io/@Cr1xxty1RMCCkPcMXYPWeg/rootkit)
+# Rootkit - Loadable Kernel Module
 - [Intro_Rootkit](#Intro-Rootkit)
 - [Explanation](#Explanation)
 - [How to use this LKM](#How-to-use-this-LKM)
 - [Reference](#Reference)
-
-
-I hope that this information will help. If you need any further information, please feel free to contact me via email r12944038@csie.ntu.edu.tw. 
 
 ## Intro Rootkit
 About Environment:
@@ -16,10 +13,10 @@ Rootkit as you might have heard before, is essentially the malware that runs in 
 
 LKM runs in kernel mode and allows access to all kernel internal structures/functions. It can be used to extend the functionality of the running kernel, and thus it is also often used to implement device drivers to support new hardware.
 
-It's a simple rootkit and provide the following functions:
-1. hide/unhide module
-2. masquerade process name
-3. hook/unhook syscall 
+It's a simple rootkit and provide the following functions: 
+(1) hide/unhide module
+(2) masquerade process name
+(3) hook/unhook syscall 
 
 ## Explanation
 After entering rootkit_init, first obtain the sys_call_table, and then save the address of the syscall table that will be replaced by the hook later.
@@ -243,12 +240,6 @@ out:
 
 
 ## How to use this LKM
-The ```make modules_install``` command ensures that these modules are correctly placed in the /lib/modules/$(KERNELRELEASE)/ directory, where $(KERNELRELEASE) is the version of the kernel you have compiled.
-
-```bash=
-sudo make modules_install 
-```
-
 ### Load My LKM
 ```bash=
 make
@@ -256,7 +247,7 @@ sudo insmod rootkit.ko
 dmesg | tail
 # the following command based on the major number for your device number, for example:
 # [  967.511465] The major number for your device is 510
-sudo mknod /dev/rootkit c xxx 0
+sudo mknod /dev/rootkit c [your major number for your device] 0
 ```
 ### Generate files for testing
 ```bash=
@@ -272,13 +263,22 @@ $ sudo ./userTest 2 -> IOCTL_MOD_HOOK
 $ sudo ./userTest 3 -> IOCTL_FILE_HIDE
 ```
 
-### Hide/Unhide module
+### Hide/Unhide module (10%)
 ```bash=
+# you will see the rootkit module
+lsmod | head
+
 # 0 is the hide/unhiden module function 
+sudo ./userTest 0
+
+# you won't see the rootkit module
+lsmod | head
+
+# you can use the function again, then you will see rootkit module back
 sudo ./userTest 0
 ```
 
-### Masquerade process name
+### Masquerade process name (30%)
 ```bash=
 # execute the program
 ./NTUST
@@ -287,6 +287,13 @@ sudo ./userTest 0
 # see their pid and name
 ps ao pid,comm
 
+
+# PID COMMAND
+# ...
+# 9440 NTUST
+# 9441 MIT
+# ...
+ 
 # Trigger Masquerade process name
 sudo ./userTest 1
 
@@ -298,26 +305,25 @@ ps ao pid,comm
 # because the length of the new_name string is longer than the orig_name. 
 ```
 
-## Hook/Unhook syscall
+## Hook/Unhook syscall (40%)
 ```bash=
 #  install the rewritten syscall hook 
 #  so that you can proceed with the following three hook syscall tests
 sudo ./userTest 2
 ```
 
-### reboot
+### reboot (10%)
 ```bash=
 # It should invoke the reboot syscall directly
 # test poweroff, It won't work
 sudo systemctl --force --force poweroff
-
 #The machine still works.
 
 # test another reboot call, It works
 sudo systemctl --force --force reboot
 ```
 
-### kill
+### kill (10%)
 ```bash=
 # run a test program
 ./hsuckd
@@ -332,7 +338,7 @@ ps aux | grep hsuckd
 # It still works
 ```
 
-### getdents64
+### getdents64 (20%)
 ```bash=
 # you can see the file "HiddenFile"
 ls
@@ -344,10 +350,10 @@ ls
 ```
 
 ## Reference
-* [Linux Rootkit 學習資源筆記](https://hackercat.org/linux/linux-rootkit-resource "Linux Rootkit 學習資源筆記")
-* [Linux LKM Rootkit Tutorial | Linux Kernel Module Rootkit](https://www.youtube.com/watch?v=hsk450he7nI "Linux LKM Rootkit Tutorial | Linux Kernel Module Rootkit")
-* [Linux Rootkit系列](https://cloud.tencent.com/developer/article/1036559 "Linux Rootkit系列")
-* [TheXcellerator Linux Rootkits](https://xcellerator.github.io/tags/rootkit/ "TheXcellerator Linux Rootkits")
-* [Hiding Kernel Modules](https://github.com/xcellerator/linux_kernel_hacking/tree/master/3_RootkitTechniques/3.0_hiding_lkm)
-* [linux_kernel_hacking](https://github.com/xcellerator/linux_kernel_hacking/tree/master)
-* [Diamorphine](https://github.com/m0nad/Diamorphine/tree/master)
+[Linux Rootkit 學習資源筆記](https://hackercat.org/linux/linux-rootkit-resource "Linux Rootkit 學習資源筆記")
+[Linux LKM Rootkit Tutorial | Linux Kernel Module Rootkit](https://www.youtube.com/watch?v=hsk450he7nI "Linux LKM Rootkit Tutorial | Linux Kernel Module Rootkit")
+[Linux Rootkit系列](https://cloud.tencent.com/developer/article/1036559 "Linux Rootkit系列")
+[TheXcellerator Linux Rootkits](https://xcellerator.github.io/tags/rootkit/ "TheXcellerator Linux Rootkits")
+[Hiding Kernel Modules](https://github.com/xcellerator/linux_kernel_hacking/tree/master/3_RootkitTechniques/3.0_hiding_lkm)
+[linux_kernel_hacking](https://github.com/xcellerator/linux_kernel_hacking/tree/master)
+[Diamorphine](https://github.com/m0nad/Diamorphine/tree/master)
