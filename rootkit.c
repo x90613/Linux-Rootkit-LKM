@@ -25,10 +25,10 @@ static struct kprobe kp = {
 #define OURMODNAME "rootkit"
 #define PF_INVISIBLE 0x10000000
 
-MODULE_AUTHOR("FOOBAR");
-MODULE_DESCRIPTION("FOOBAR");
+MODULE_AUTHOR("Harry Hsu x90613@gmail.com");
+MODULE_DESCRIPTION("Linux-Rootkit-LKM");
 MODULE_LICENSE("Dual MIT/GPL");
-MODULE_VERSION("0.1");
+MODULE_VERSION("1.0");
 
 struct task_struct * find_task(pid_t pid)
 {
