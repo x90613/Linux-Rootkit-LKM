@@ -316,10 +316,12 @@ static int __init rootkit_init(void)
 	int ret;
 	dev_t dev_no, dev;
 
+	/* Allocate a character device structure */
 	kernel_cdev = cdev_alloc();
 	kernel_cdev->ops = &fops;
 	kernel_cdev->owner = THIS_MODULE;
 
+	/* Allocate a character device region */
 	ret = alloc_chrdev_region(&dev_no, 0, 1, "rootkit");
 	if (ret < 0) {
 		pr_info("major number allocation failed\n");
@@ -329,6 +331,8 @@ static int __init rootkit_init(void)
 	major = MAJOR(dev_no);
 	dev = MKDEV(major, 0);
 	printk("The major number for your device is %d\n", major);
+	
+	/* Add a char device to the kernel VFS*/
 	ret = cdev_add(kernel_cdev, dev, 1);
 	if (ret < 0) {
 		pr_info(KERN_INFO "unable to allocate cdev");
