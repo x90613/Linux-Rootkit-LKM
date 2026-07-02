@@ -148,18 +148,36 @@ Create `start-vm.sh` in `~/arm-vm/`:
 
 ```bash
 #!/bin/bash
+mkdir -p ~/arm-vm/shared
+
 qemu-system-aarch64 \
-  -M virt \                  # use the generic "virt" ARM machine type
-  -cpu cortex-a57 \          # emulate a Cortex-A57 CPU
-  -m 2G \                    # give the VM 2 GB of RAM
-  -smp 2 \                   # give the VM 2 CPU cores
-  -kernel ./linux-5.15/arch/arm64/boot/Image \   # use our custom kernel
-  -append "root=/dev/vda1 rw console=ttyAMA0 nokaslr" \  # kernel command line
-  -drive file=./debian-12-nocloud-arm64.qcow2,if=virtio,format=qcow2 \  # disk
-  -netdev user,id=net0,hostfwd=tcp::2222-:22 \   # NAT network, forward host:2222 → VM:22
+  -M virt \
+  -cpu cortex-a57 \
+  -m 2G \
+  -smp 2 \
+  -kernel ./linux-5.15/arch/arm64/boot/Image \
+  -append "root=/dev/vda1 rw console=ttyAMA0 nokaslr" \
+  -drive file=./debian-12-nocloud-arm64.qcow2,if=virtio,format=qcow2 \
+  -netdev user,id=net0,hostfwd=tcp::2222-:22 \
   -device virtio-net-pci,netdev=net0 \
-  -nographic                 # no graphical window; use serial console in this terminal
+  -fsdev local,security_model=passthrough,id=fsdev0,path=$HOME/arm-vm/shared \
+  -device virtio-9p-pci,id=fs0,fsdev=fsdev0,mount_tag=hostshare \
+  -nographic
 ```
+
+**Flag reference:**
+
+| Flag | Purpose |
+|---|---|
+| `-M virt` | Generic ARM virtual machine type |
+| `-cpu cortex-a57` | Emulate a Cortex-A57 CPU |
+| `-m 2G` / `-smp 2` | 2 GB RAM, 2 CPU cores |
+| `-kernel` | Boot using our custom-compiled kernel image |
+| `-append` | Kernel command line arguments (see below) |
+| `-drive` | Attach the Debian disk image |
+| `-netdev` / `-device virtio-net-pci` | NAT network, forwards host port 2222 to VM port 22 |
+| `-fsdev` / `-device virtio-9p-pci` | Share `~/arm-vm/shared` into the VM via VirtFS |
+| `-nographic` | No GUI window; use serial console in this terminal |
 
 **Kernel command line explained:**
 - `root=/dev/vda1` — the disk's first partition is the root filesystem
@@ -177,6 +195,32 @@ chmod +x start-vm.sh
 You'll see the kernel boot log scroll by in your terminal. This is the serial console — there is no graphical window.
 
 > **To exit the VM later:** type `poweroff` inside the VM, or press `Ctrl-A X` in the QEMU terminal to force-quit.
+
+### Mounting the Shared Folder Inside the VM
+
+The shared folder (`~/arm-vm/shared` on your host) is exposed to the VM via VirtFS (9p). Mount it once after booting:
+
+```bash
+mkdir -p /mnt/host
+mount -t 9p -o trans=virtio hostshare /mnt/host
+```
+
+To mount it automatically on every boot, add this line to `/etc/fstab` inside the VM:
+
+```
+hostshare  /mnt/host  9p  trans=virtio,version=9p2000.L,rw  0  0
+```
+
+**Typical workflow:** drop your compiled `.ko` file into `~/arm-vm/shared` on the host, then load it directly inside the VM without `scp`:
+
+```bash
+# on the host
+cp ~/arm-vm/mymodule/mymodule.ko ~/arm-vm/shared/
+
+# inside the VM
+insmod /mnt/host/mymodule.ko
+dmesg | tail
+```
 
 ---
 
@@ -363,6 +407,7 @@ dmesg | tail            # should now show "mymodule: unloaded"
 │   └── arch/arm64/boot/Image               # compiled kernel image
 ├── debian-12-nocloud-arm64.qcow2            # VM disk image (rootfs)
 ├── start-vm.sh                              # QEMU launch script
+├── shared/                                  # host↔VM shared folder (mounted at /mnt/host inside VM)
 └── mymodule/                                # your kernel module
     ├── mymodule.c
     └── Makefile
