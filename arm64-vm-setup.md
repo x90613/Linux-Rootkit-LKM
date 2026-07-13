@@ -129,16 +129,56 @@ After building, type `exit` to leave the container. The compiled kernel image is
 
 ## Step 4 — Prepare Rootfs
 
-Download a pre-built Debian 12 (Bookworm) cloud image for ARM64. This is the disk image that will serve as the VM's root filesystem — it already has a working userspace (bash, apt, systemd, etc.).
+Download the Ubuntu 20.04 ARM64 root filesystem tarball on your host first:
 
 ```bash
 cd ~/arm-vm
-curl -LO https://cloud.debian.org/images/cloud/bookworm/latest/debian-12-nocloud-arm64.qcow2
+curl -LO https://cloud-images.ubuntu.com/releases/focal/release/ubuntu-20.04-server-cloudimg-arm64-root.tar.xz
 ```
 
-`nocloud` means the image has no cloud-init configuration — it boots straight to a root shell without needing cloud metadata. Perfect for local VM use.
+Mounting a raw disk image requires loop device support, which macOS doesn't provide. Run the image creation steps inside the same Docker builder container with `--privileged` so loop mounts work. The `-v ~/arm-vm:/work` flag writes `cloud.img` directly to your host's `~/arm-vm/` directory.
 
-> **File size:** ~300 MB.
+```bash
+docker run --rm -it --privileged \
+  -v ~/arm-vm:/work \
+  -w /work \
+  kernel-builder bash
+```
+
+Inside the container (you are already root — no `sudo` needed):
+
+```bash
+apt-get update && apt-get install -y qemu-utils e2fsprogs
+
+# Create a 20 GB raw disk image and format it as ext4
+qemu-img create -f raw cloud.img 20g
+mkfs.ext4 cloud.img
+
+# Mount the image and extract the rootfs into it
+mount cloud.img /mnt
+tar xvf ubuntu-20.04-server-cloudimg-arm64-root.tar.xz -C /mnt
+sync
+
+# Disable cloud-init (prevents boot delays waiting for cloud metadata)
+touch /mnt/etc/cloud/cloud-init.disabled
+
+# Enable root login without password
+sed -i 's|^root:[^:]*:|root::|' /mnt/etc/passwd
+
+# Unmount
+umount /mnt
+exit
+```
+
+**What each step does:**
+- `--privileged` — grants the container the capabilities needed for loop device mounts; without it, `mount cloud.img /mnt` fails
+- `qemu-img create -f raw` — creates a plain binary disk image (no compression, QEMU can use it directly)
+- `mkfs.ext4` — formats the image with a Linux filesystem
+- `tar xvf ... -C /mnt` — unpacks the Ubuntu userspace into the mounted image
+- `cloud-init.disabled` — skips cloud-init on boot so the VM starts immediately
+- `sed -i` on `passwd` — sets an empty root password so you can log in via the serial console on first boot
+
+> **File sizes:** tarball ~200 MB, resulting `cloud.img` ~20 GB (sparse on disk).
 
 ---
 
@@ -156,8 +196,8 @@ qemu-system-aarch64 \
   -m 2G \
   -smp 2 \
   -kernel ./linux-5.15/arch/arm64/boot/Image \
-  -append "root=/dev/vda1 rw console=ttyAMA0 nokaslr" \
-  -drive file=./debian-12-nocloud-arm64.qcow2,if=virtio,format=qcow2 \
+  -append "root=/dev/vda rw console=ttyAMA0 nokaslr" \
+  -drive file=./cloud.img,if=virtio,format=raw \
   -netdev user,id=net0,hostfwd=tcp::2222-:22 \
   -device virtio-net-pci,netdev=net0 \
   -fsdev local,security_model=passthrough,id=fsdev0,path=$HOME/arm-vm/shared \
@@ -174,13 +214,13 @@ qemu-system-aarch64 \
 | `-m 2G` / `-smp 2` | 2 GB RAM, 2 CPU cores |
 | `-kernel` | Boot using our custom-compiled kernel image |
 | `-append` | Kernel command line arguments (see below) |
-| `-drive` | Attach the Debian disk image |
+| `-drive` | Attach the Ubuntu raw disk image |
 | `-netdev` / `-device virtio-net-pci` | NAT network, forwards host port 2222 to VM port 22 |
 | `-fsdev` / `-device virtio-9p-pci` | Share `~/arm-vm/shared` into the VM via VirtFS |
 | `-nographic` | No GUI window; use serial console in this terminal |
 
 **Kernel command line explained:**
-- `root=/dev/vda1` — the disk's first partition is the root filesystem
+- `root=/dev/vda` — the raw image has no partition table; the entire disk is the root filesystem
 - `rw` — mount root read-write
 - `console=ttyAMA0` — send kernel log output to the serial port (your terminal)
 - `nokaslr` — disable kernel address space layout randomization; keeps symbol addresses fixed, which is essential for kernel module development and debugging
@@ -228,35 +268,17 @@ dmesg | tail
 
 Log in via the serial console (username `root`, no password needed on first boot) and run the following setup steps.
 
-**Fix DNS** (the nocloud image sometimes has no DNS configured):
+**Get a DHCP address** (Ubuntu cloud images rely on DHCP for networking):
 
 ```bash
-echo "nameserver 8.8.8.8" > /etc/resolv.conf
+dhclient
 ```
 
-**Fix apt sources** (ensure bookworm and security repos are reachable):
+**Configure SSH and allow root login:**
 
 ```bash
-cat > /etc/apt/sources.list.d/debian.sources << 'EOF'
-Types: deb deb-src
-URIs: http://deb.debian.org/debian
-Suites: bookworm bookworm-updates bookworm-backports
-Components: main
-Signed-By: /usr/share/keyrings/debian-archive-keyring.gpg
-
-Types: deb deb-src
-URIs: http://deb.debian.org/debian-security
-Suites: bookworm-security
-Components: main
-Signed-By: /usr/share/keyrings/debian-archive-keyring.gpg
-EOF
-```
-
-**Install SSH and allow passwordless login:**
-
-```bash
-apt-get update
-apt-get install -y openssh-server
+# Regenerate host keys (required on first boot of a cloud image clone)
+dpkg-reconfigure openssh-server
 
 # Allow root login over SSH
 echo "PermitRootLogin yes" >> /etc/ssh/sshd_config
@@ -267,11 +289,29 @@ echo "PermitEmptyPasswords yes" >> /etc/ssh/sshd_config
 # Remove root's password so empty-password login works
 passwd -d root
 
-systemctl start ssh
+systemctl restart ssh
 systemctl enable ssh
 ```
 
 > **Security note:** These SSH settings are intentionally insecure. This is fine because the VM is only accessible locally (port 2222 on localhost) and used only for development.
+
+**Disable snapd** (Ubuntu ships with snapd enabled; it generates noisy pop-up messages and background activity on the QEMU serial console):
+
+```bash
+systemctl stop snapd.service snapd.socket snapd.seeded.service
+systemctl disable snapd.service snapd.socket snapd.seeded.service
+systemctl mask snapd.service snapd.socket
+```
+
+Alternatively, you can use SSH key authentication (more secure and avoids empty-password login):
+
+```bash
+ssh-keygen  # run on your host, generates ~/.ssh/id_rsa and ~/.ssh/id_rsa.pub
+
+# inside the VM:
+mkdir -p /root/.ssh
+# paste the contents of your host's ~/.ssh/id_rsa.pub into /root/.ssh/authorized_keys
+```
 
 ---
 
@@ -405,7 +445,8 @@ dmesg | tail            # should now show "mymodule: unloaded"
 ├── Dockerfile.builder                       # Docker image for kernel compilation
 ├── linux-5.15/                              # kernel source + build artifacts
 │   └── arch/arm64/boot/Image               # compiled kernel image
-├── debian-12-nocloud-arm64.qcow2            # VM disk image (rootfs)
+├── ubuntu-20.04-server-cloudimg-arm64-root.tar.xz  # downloaded rootfs tarball
+├── cloud.img                                # VM disk image (rootfs, raw format)
 ├── start-vm.sh                              # QEMU launch script
 ├── shared/                                  # host↔VM shared folder (mounted at /mnt/host inside VM)
 └── mymodule/                                # your kernel module
