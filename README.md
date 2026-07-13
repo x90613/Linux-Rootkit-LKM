@@ -45,6 +45,10 @@ You need an AArch64 Linux environment running kernel v5.15. If you don't have on
 ## Build and Load
 
 ```bash
+# Install build dependencies
+sudo apt update
+sudo apt install build-essential
+
 # Build the kernel module
 make
 
