@@ -68,6 +68,13 @@ make generateTestFile
 
 The test programs (`userTest`, `NTUST`, `MIT`, `hsuckd`) are compiled from `test_src/` into `out/`.
 
+To unload the module and remove the device node:
+
+```bash
+sudo rmmod loadable_kernel_module
+sudo rm /dev/loadable_kernel_module
+```
+
 ---
 
 ## Usage
