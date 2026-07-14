@@ -1,6 +1,6 @@
 # Linux Rootkit — Loadable Kernel Module
 
-> **Environment:** AArch64 (ARM64), Linux mainline v5.15
+> **Environment:** AArch64 (ARM64), Linux mainline v5.15 / v6.18
 
 A research rootkit implemented as a Linux Loadable Kernel Module (LKM). LKMs run in kernel mode with full access to kernel internals — the same mechanism used by device drivers, but here used to hook syscalls and hide activity from userspace.
 
@@ -36,9 +36,53 @@ A research rootkit implemented as a Linux Loadable Kernel Module (LKM). LKMs run
 
 ## Getting Started
 
-You need an AArch64 Linux environment running kernel v5.15. If you don't have one set up, follow the step-by-step guide:
+You need an AArch64 Linux environment running kernel v5.15 or v6.18. If you don't have one set up, follow the step-by-step guide:
 
-**[arm64-vm-setup.md](./arm64-vm-setup.md)** — build a kernel v5.15 VM on Apple Silicon using QEMU and Docker. Covers cross-compiling the kernel, booting a Debian guest, and loading your first kernel module.
+**[arm64-vm-setup.md](./arm64-vm-setup.md)** — build a kernel VM on Apple Silicon using QEMU and Docker. Covers cross-compiling the kernel, booting a Debian guest, and loading your first kernel module.
+
+### Kernel Configuration (required for syscall hooking)
+
+When building the kernel from source, the following `scripts/config` options must be set. Start from a base config, apply these, then run `olddefconfig` to resolve dependencies:
+
+```bash
+cd ~/linux
+
+# Base config
+make ARCH=arm64 defconfig
+
+# Module support (keep these if already set)
+scripts/config --enable CONFIG_MODULES
+scripts/config --enable CONFIG_MODULE_UNLOAD
+scripts/config --enable CONFIG_SYSFS
+scripts/config --enable CONFIG_KALLSYMS
+scripts/config --enable CONFIG_KALLSYMS_ALL
+scripts/config --disable CONFIG_TRIM_UNUSED_KSYMS
+
+# Kprobes — required for resolving unexported kernel symbols at runtime
+scripts/config --enable CONFIG_KPROBES
+scripts/config --enable CONFIG_KPROBE_EVENTS
+scripts/config --enable CONFIG_HAVE_KPROBES
+scripts/config --enable CONFIG_KPROBES_ON_FTRACE
+
+# Ftrace — underlying mechanism used by livepatch to intercept function calls
+scripts/config --enable CONFIG_FTRACE
+scripts/config --enable CONFIG_FUNCTION_TRACER
+scripts/config --enable CONFIG_DYNAMIC_FTRACE
+scripts/config --enable CONFIG_DYNAMIC_FTRACE_WITH_ARGS
+
+# Livepatch
+scripts/config --enable CONFIG_LIVEPATCH
+scripts/config --enable CONFIG_SAMPLE_LIVEPATCH
+
+# Debug info (useful for symbol tracing and cross-referencing)
+scripts/config --enable CONFIG_DEBUG_INFO
+scripts/config --enable CONFIG_DEBUG_INFO_DWARF4
+
+# Resolve all config dependencies
+make ARCH=arm64 olddefconfig
+```
+
+> **Note:** `CONFIG_KPROBES` is the critical one. Without it, the module cannot resolve `kallsyms_lookup_name` at runtime and will fail to load.
 
 ---
 
