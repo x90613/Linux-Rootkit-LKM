@@ -66,7 +66,7 @@ sudo mknod /dev/loadable_kernel_module c 510 0
 make generateTestFile
 ```
 
-The test programs (`userTest`, `NTUST`, `MIT`, `hsuckd`) are compiled from `test_src/`.
+The test programs (`userTest`, `NTUST`, `MIT`, `hsuckd`) are compiled from `test_src/` into `out/`.
 
 ---
 
@@ -82,10 +82,10 @@ Toggles the module's presence in `lsmod`. Calling it a second time makes the mod
 ```bash
 lsmod | grep loadable_kernel_module        # visible
 
-sudo ./userTest 0           # hide
+sudo ./out/userTest 0       # hide
 lsmod | grep loadable_kernel_module        # gone
 
-sudo ./userTest 0           # unhide
+sudo ./out/userTest 0       # unhide
 lsmod | grep loadable_kernel_module        # back
 ```
 
@@ -97,11 +97,11 @@ The new name must be **shorter** than the original, otherwise it is silently ski
 The hardcoded demo in `userTest 1`: `NTUST` → `NTU`, `MIT` → `Standford` (skipped — longer).
 
 ```bash
-./NTUST &
-./MIT &
+./out/NTUST &
+./out/MIT &
 ps ao pid,comm              # shows NTUST, MIT
 
-sudo ./userTest 1
+sudo ./out/userTest 1
 
 ps ao pid,comm
 # NTUST is now NTU
@@ -113,7 +113,7 @@ ps ao pid,comm
 Installs hooks for three syscalls. Hooks are **not** active at `insmod` — they must be enabled explicitly:
 
 ```bash
-sudo ./userTest 2
+sudo ./out/userTest 2
 ```
 
 **reboot** — intercepts `LINUX_REBOOT_CMD_POWER_OFF` and drops it silently. Other reboot commands pass through.
@@ -126,7 +126,7 @@ sudo systemctl --force --force reboot     # allowed — machine reboots
 **kill** — intercepts SIGKILL (signal 9) and drops it. Other signals pass through.
 
 ```bash
-./hsuckd &
+./out/hsuckd &
 ps aux | grep hsuckd
 kill -9 <pid>               # intercepted — process survives
 kill -10 <pid>              # passes through
@@ -139,7 +139,7 @@ kill -10 <pid>              # passes through
 ```bash
 ls                          # HiddenFile is visible
 
-sudo ./userTest 3           # hides "HiddenFile"
+sudo ./out/userTest 3       # hides "HiddenFile"
 
 ls                          # HiddenFile is gone
 ```

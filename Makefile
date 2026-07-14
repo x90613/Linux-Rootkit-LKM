@@ -9,11 +9,15 @@ all:
 clean:
 	$(MAKE) -C $(KDIR) M=$(PWD) clean
 
+test: generateTestFile
+	sudo bash test_src/run_tests.sh
+
 generateTestFile:
-	gcc -I. test_src/userTest.c -o userTest 
-	gcc -I. test_src/hsuckd.c -o hsuckd
-	gcc -I. test_src/MIT.c -o MIT
-	gcc -I. test_src/NTUST.c -o NTUST
+	mkdir -p out
+	gcc -I. test_src/userTest.c -o out/userTest
+	gcc -I. test_src/hsuckd.c -o out/hsuckd
+	gcc -I. test_src/MIT.c -o out/MIT
+	gcc -I. test_src/NTUST.c -o out/NTUST
 
 cleanTestFile:
-	rm -f userTest hsuckd MIT NTUST
+	rm -rf out
