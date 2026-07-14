@@ -7,8 +7,5 @@
 modules.order
 Module.symvers
 
-# Ignore user-space executable files
-userTest
-hsuckd
-MIT
-NTUST
+# Ignore compiled test binaries
+out/

